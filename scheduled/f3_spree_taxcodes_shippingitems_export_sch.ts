@@ -20,10 +20,14 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
     FALSE: 'F',
     ROUTE_TAXCODES: 'taxcodes', // API route for tax codes
     ROUTE_SHIPPINGITEMS: 'shippingitems', // API route for shipping items
+    // ROUTE_TAXCODES: 'taxrates/executeDBOperationForTaxCode', // API route for tax codes
+    // ROUTE_SHIPPINGITEMS: 'f3shiprates/upsertOrDelete', // API route for shipping items
     SUCCESS: 'SUCCESS',
     FAILED: 'FAILED',
-    URL: 'https://e0520828.ngrok.io/api/v1/', // API URL
+    URL: 'http://ndk-staging-jones.nidecker.com/api/v1/', // API URL
     CONTENT_TYPE: 'application/json',
+    ANY_OF: 'anyof',
+    AND: 'AND',
 
     // list of operations
     OPERATIONS: {
@@ -52,7 +56,6 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
       OPERATION: 'custrecord_f3_operation',
       SYNC_DATE: 'custrecord_f3_syncdate',
       RECORD_TYPE: 'custrecord_f3_recordtype',
-      ANY_OF: 'anyof'
     },
     // custom fields name of custom record
     CUSTOM_RECORD_FIELDS: {
@@ -64,6 +67,24 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
       OPERATION: 'operation',
       SYNC_DATE: 'syncdate',
       RECORD_TYPE: 'recordtype'
+    },
+    // 
+    FC_SCRUB_SEARCH_RECORD: {
+      SYSTEM_ID: '3',
+      SHIPPING_METHOD_ZONE_ID: '17',
+      SHIPPING_METHOD_CATEGORY_ID: '18',
+      FC_SCRUB_RECORD: 'customrecord_fc_scrub',
+      FC_SYSTEM: 'custrecord_fc_system',
+      FC_TYPE: 'custrecord_fc_scrub_type',
+      FC_SCRUB_KEY: 'custrecord_fc_scrub_key',
+      FC_SCRUB_VALUE: 'custrecord_fc_scrub_value'
+    },
+    //
+    FC_SCRUB_SEARCH_FIELDS: {
+      FC_SYSTEM: 'syetem',
+      FC_TYPE: 'type',
+      FC_SCRUB_KEY: 'key',
+      FC_SCRUB_VALUE: 'value'
     }
   };
   // end
@@ -180,19 +201,57 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
     let context = nlapiGetContext();
     try {
       let convertedRecord: Array<object> = [];
+      let zonesConvertedRecord: Array<object> = [];
+      let categoriesConvertedRecord: Array<object> = [];
       let taxCodes: Array<object> = [];
       let shippingItems: Array<object> = [];
       let taxCodesResponse: object = {};
       let shippingItemsResponse: object = {};
       let RECORD_TYPE = this.CONSTANTS.RECORD_TYPE;
+      let zonesArray: any = [];
+      let categoriesArray: any = [];
+      let shippingZonesFcScrub: any = [];
+      let shippingCategoriesFcScrub: any = [];
+      let FC_SCRUB_SEARCH_RECORD = this.CONSTANTS.FC_SCRUB_SEARCH_RECORD;
+      this.CONSTANTS.URL = !!ConnectorConstants.CurrentStore.entitySyncInfo.apiUrl ? ConnectorConstants.CurrentStore.entitySyncInfo.apiUrl: this.CONSTANTS.URL;
 
-      var shippingMethodsDefaults = ConnectorConstants.CurrentStore.entitySyncInfo.shippingMethodsDefaults;
-      var taxCodesDefaults = ConnectorConstants.CurrentStore.entitySyncInfo.taxCodesDefaults;
-
+      // from entity sync info
+      let taxCodesDefaults = ConnectorConstants.CurrentStore.entitySyncInfo.taxCodesDefaults;
+      let shippingMethodsDefaults = ConnectorConstants.CurrentStore.entitySyncInfo.shippingMethodsDefaults;
+      let shippingZones = shippingMethodsDefaults.zones;
+      let shippingCategories = shippingMethodsDefaults.categories;
+      
       Utility.logDebug('inside processRecord', 'processRecords');
 
-      // START
-      convertedRecord = this.onConversionToFlattenObject(customRecordData);
+      // call function --> convertToArray()  
+      zonesArray = this.convertToArray(shippingZones);
+      categoriesArray = this.convertToArray(shippingCategories);
+
+      // fetch zones from fc scrub 
+      let shippingZonesFils: Array<any> = this.fcScrubFilterCriteria(FC_SCRUB_SEARCH_RECORD.SHIPPING_METHOD_ZONE_ID);
+      let shippingZonesCols: Array<any> = this.fcScrubColumnCriteria();
+      let shippingZonesRecordData = nlapiSearchRecord(FC_SCRUB_SEARCH_RECORD.FC_SCRUB_RECORD, null, shippingZonesFils, shippingZonesCols);
+
+      zonesConvertedRecord = this.onConversionToFlattenObject(shippingZonesRecordData, 'fcScrubRecord');
+      zonesConvertedRecord.forEach(function(zoneEl: any) {
+        shippingZonesFcScrub.push(zoneEl.value)
+      });
+
+      // fetch categories from fc scrub 
+      let shippingCategoriesFils: Array<any> = this.fcScrubFilterCriteria(FC_SCRUB_SEARCH_RECORD.SHIPPING_METHOD_CATEGORY_ID);
+      let shippingCategoriesCols: Array<any> = this.fcScrubColumnCriteria();
+      let shippingCategoriesRecordData = nlapiSearchRecord(FC_SCRUB_SEARCH_RECORD.FC_SCRUB_RECORD, null, shippingCategoriesFils, shippingCategoriesCols);
+
+      categoriesConvertedRecord = this.onConversionToFlattenObject(shippingCategoriesRecordData, 'fcScrubRecord');
+      categoriesConvertedRecord.forEach(function(categoryEl: any) {
+        shippingCategoriesFcScrub.push(categoryEl.value)
+      });
+
+      Utility.logDebug('shippingZonesRecordData', JSON.stringify(shippingZonesFcScrub));
+      Utility.logDebug('shippingCategoriesRecordData', JSON.stringify(shippingCategoriesFcScrub));
+
+      
+      convertedRecord = this.onConversionToFlattenObject(customRecordData, 'customRecord');
 
       convertedRecord.forEach((recEl: any) => {
         if (recEl.recordtype_id == RECORD_TYPE.TAX_CODE) {
@@ -207,7 +266,7 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
         }
         else if (recEl.recordtype_id == RECORD_TYPE.SHIPPING_METHOD) {
           // appending other fields (columns) default values defined in entitySyncInfo
-          var tempCode = recEl.name.toLowerCase();
+          let tempCode = recEl.name.toLowerCase();
           tempCode = tempCode.trim();
           recEl.code = tempCode.replace(/ /g, '_') || '';
           // recEl.store_id = ConnectorConstants.CurrentStore.systemId || '';
@@ -216,6 +275,8 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
           recEl.display_on = shippingMethodsDefaults.display_on || '';
           recEl.tracking_url = shippingMethodsDefaults.tracking_url || '';
           recEl.tax_category_id = shippingMethodsDefaults.tax_category_id || '4';
+          recEl.zones = shippingZonesFcScrub || zonesArray;
+          recEl.categories = shippingCategoriesFcScrub || categoriesArray;
           shippingItems.push(recEl);
         }
       });
@@ -260,9 +321,17 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
     context.setPercentComplete(100.00);
   }
 
+  private convertToArray(jsonObj) {
+    let objValues = [];
+    for (let key in jsonObj) {
+      objValues.push(jsonObj[key]);
+    }
+    return objValues;
+  }
+
   private updateValuesOnCustomRecord(httpResponseObject): void {
     let CUSTOM_RECORD = this.CONSTANTS.CUSTOM_RECORD;
-    httpResponseObject = httpResponseObject? JSON.parse(httpResponseObject) : [];
+    httpResponseObject = httpResponseObject ? JSON.parse(httpResponseObject) : [];
 
     let httpResponseData = httpResponseObject.data ? httpResponseObject.data : [];
     Utility.logDebug('updateValuesOnCustomRecord:httpResponseObject', JSON.stringify(httpResponseObject));
@@ -300,7 +369,7 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
     let STATUS = this.CONSTANTS.STATUS;
 
     return [
-      [CUSTOM_RECORD.STATUS, CUSTOM_RECORD.ANY_OF, STATUS.PENDING]
+      [CUSTOM_RECORD.STATUS, this.CONSTANTS.ANY_OF, STATUS.PENDING]
     ]
   }
 
@@ -319,7 +388,7 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
     ]
   }
 
-  private getColumnData(): Array<object> {
+  private getCustomRecColumns(): Array<object> {
     let CUSTOM_RECORD = this.CONSTANTS.CUSTOM_RECORD;
     let CUSTOM_RECORD_FIELDS = this.CONSTANTS.CUSTOM_RECORD_FIELDS;
 
@@ -359,9 +428,14 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
     ];
   }
 
-  private onConversionToFlattenObject(customRecordData) {
+  private onConversionToFlattenObject(customRecordData, methodName) {
     let convertedRecord = [];
-    let cols = this.getColumnData();
+    let cols;
+    if (methodName == 'fcScrubRecord') {
+      cols = this.getFcScrubColumns();
+    } else {
+      cols = this.getCustomRecColumns();
+    }
 
     for (let key in customRecordData) {
       let row = customRecordData[key];
@@ -387,6 +461,51 @@ class TaxCodesShippingItemsExportSch extends BaseScheduled {
     Utility.logDebug('onConversionToFlattenObject:convertedRecord', JSON.stringify(convertedRecord));
 
     return convertedRecord;
+  }
+
+  private fcScrubFilterCriteria(fcScrubTypeId): Array<any> {
+    let FC_SCRUB_SEARCH_RECORD = this.CONSTANTS.FC_SCRUB_SEARCH_RECORD;
+    
+    return [
+      [FC_SCRUB_SEARCH_RECORD.FC_SYSTEM, this.CONSTANTS.ANY_OF, FC_SCRUB_SEARCH_RECORD.SYSTEM_ID],
+      this.CONSTANTS.AND,
+      [FC_SCRUB_SEARCH_RECORD.FC_TYPE, this.CONSTANTS.ANY_OF, fcScrubTypeId]
+    ]
+  }
+
+  private fcScrubColumnCriteria(): Array<any> {
+    let FC_SCRUB_SEARCH_RECORD = this.CONSTANTS.FC_SCRUB_SEARCH_RECORD;
+
+    return [
+      // new nlobjSearchColumn(FC_SCRUB_SEARCH_RECORD.FC_SYSTEM),
+      // new nlobjSearchColumn(FC_SCRUB_SEARCH_RECORD.FC_TYPE),
+      // new nlobjSearchColumn(FC_SCRUB_SEARCH_RECORD.FC_SCRUB_KEY),
+      new nlobjSearchColumn(FC_SCRUB_SEARCH_RECORD.FC_SCRUB_VALUE)
+    ]
+  }
+
+  private getFcScrubColumns(): Array<object> {
+    let FC_SCRUB_SEARCH_RECORD = this.CONSTANTS.FC_SCRUB_SEARCH_RECORD;
+    let FC_SCRUB_SEARCH_FIELDS = this.CONSTANTS.FC_SCRUB_SEARCH_FIELDS;
+
+    return [
+      // {
+      //   id: FC_SCRUB_SEARCH_RECORD.FC_SYSTEM,
+      //   name: FC_SCRUB_SEARCH_FIELDS.FC_SYSTEM
+      // },
+      // {
+      //   id: FC_SCRUB_SEARCH_RECORD.FC_TYPE,
+      //   name: FC_SCRUB_SEARCH_FIELDS.FC_TYPE
+      // },
+      // {
+      //   id: FC_SCRUB_SEARCH_RECORD.FC_SCRUB_KEY,
+      //   name: FC_SCRUB_SEARCH_FIELDS.FC_SCRUB_KEY
+      // },
+      {
+        id: FC_SCRUB_SEARCH_RECORD.FC_SCRUB_VALUE,
+        name: FC_SCRUB_SEARCH_FIELDS.FC_SCRUB_VALUE
+      }
+    ];
   }
 
   /**
